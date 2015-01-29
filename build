@@ -41,17 +41,30 @@ function theMain() {
     run("open http://localhost/$safeVersion/$flavor/sugarcrm");
 }
 
+// version, flavor, sidecar, demoData, newDump, loadDump
 function getOptions($defaultversion, $defaultflavor) {
-    $options = getopt('fq', array("full", "quick"));
-    if (array_key_exists('full', $options) || array_key_exists('f', $options)) {
+    $options = getopt('hfqi', array("help", "full", "quick", "interactive"));
+    if (array_key_exists('interactive', $options) || array_key_exists('i', $options)) {
+        error_log("prompting user for information");
+        return getAllUserInput($defaultversion, $defaultflavor);
+    } else if (array_key_exists('full', $options) || array_key_exists('f', $options)) {
         error_log("full flag passed, running full rebuild");
         return array($defaultversion, $defaultflavor, true, true, true, false);
     } else if (array_key_exists('quick', $options) || array_key_exists('q', $options)) {
         error_log("quick flag passed, running quick rebuild");
         return array($defaultversion, $defaultflavor, false, false, false, true);
     } else {
-        error_log("prompting user for information");
-        return getAllUserInput($defaultversion, $defaultflavor);
+        error_log(PHP_EOL . "Usage: build [-hfq] [--help] [--full] [--quick]" . PHP_EOL .
+            "-h, --help\t\tDisplay this help" . PHP_EOL .
+            "-i, --interactive\tRun in manual mode, which prompts for user input. DO THIS FIRST" . PHP_EOL .
+            "-f, --full\t\tRun in full mode, after defaults have been set in manual mode" . PHP_EOL .
+            "\t\t\tDefault Version, Default Flavor, Rebuild Sidecar, Build Demo Data, Store new MySQL dump" . PHP_EOL .
+            "\t\t\tTakes precedence over -q/--quick" . PHP_EOL .
+            "-q, --quick\t\tRun in quick mode, after defaults have been set in manual mode" . PHP_EOL .
+            "\t\t\tDefault Version, Default Flavor, Skip Sidecar, Skip Demo Data, Retrive data from MySQL dump" . PHP_EOL . PHP_EOL .
+            "When in doubt, run in the -i/--interactive mode" . PHP_EOL
+        );
+        exit(0);
     }
     
 }
