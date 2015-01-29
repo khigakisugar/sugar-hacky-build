@@ -1,78 +1,150 @@
 #!/usr/bin/php
 <?php
+
+$HOMEROOT = getenv("HOME");
+$HOME = getcwd();
+
 function theMain() {
-    //Get the version and flavor for install
 
-    //$HOME = $_SERVER['HOME'];
-    $HOMEROOT = getenv("HOME");
-    $HOME = getcwd();
-
+    global $HOMEROOT, $HOME;
+    // get the default values from the ini file
+    error_log("pulling defaults from ini file");
     $defaultsfile = "$HOME/sugarbuildconfig.ini";
+    list($defaultversion, $defaultflavor) = getDefaults($defaultsfile);
+
+    // get the user input
+    list($version, $flavor, $sidecar, $demoData, $newDump, $loadDump) = getOptions($defaultversion, $defaultflavor);
+    $safeVersion = str_replace(".", "_", $version);
+    $database = "sugar_$safeVersion" . "_$flavor";
+    $dumpfile = "$HOME/$database.sql";
+        
+    // update ini file
+    error_log("updating defaults: version=$version, flavor=$flavor");
+    setDefaults($defaultsfile, $version, $flavor);
+
+    // if loading from dump, check for mysqldump file
+    if ($loadDump && !file_exists($dumpfile)) {
+        error_log("file $dumpfile does not exist, cannot load data");
+        exit(1);
+    }
+
+    // Build the config from template
+    updateConfigSi($flavor, $safeVersion, $demoData);
+
+    // Run the build
+    runBuild($sidecar, $version, $flavor, $safeVersion);
+
+    // Create or load mysqldump file
+    runMysql($newDump, $loadDump, $database, $dumpfile);
+
+    // Open a browser window
+    run("open http://localhost/$safeVersion/$flavor/sugarcrm");
+}
+
+function getOptions($defaultversion, $defaultflavor) {
+    $options = getopt('fq', array("full", "quick"));
+    if (array_key_exists('full', $options) || array_key_exists('f', $options)) {
+        error_log("full flag passed, running full rebuild");
+        return array($defaultversion, $defaultflavor, true, true, true, false);
+    } else if (array_key_exists('quick', $options) || array_key_exists('q', $options)) {
+        error_log("quick flag passed, running quick rebuild");
+        return array($defaultversion, $defaultflavor, false, false, false, true);
+    } else {
+        error_log("prompting user for information");
+        return getAllUserInput($defaultversion, $defaultflavor);
+    }
+    
+}
+
+function run($cmd, $dir=NULL) {
+    if ($dir) {
+        chdir($dir);
+    }
+    error_log("!running: `$cmd`");
+    shell_exec($cmd);
+}
+
+function promptUser($prompt, $allowedValues=NULL, $default=NULL) {
+    // loop until a valid answer is provided
+    while (true) {
+        $userValue = strtolower(readline($prompt));
+        // if answer is an empty string and default is specified, return default
+        if (($userValue == "") && $default){
+            error_log("defaulting to $default");
+            return $default;
+        }
+        // check answer against allowed values.
+        if ($allowedValues) {
+            if (in_array($userValue, $allowedValues)) {
+                // valid answer given, return answer
+                return $userValue;
+            } else {
+                // invalid answer given, prompt again
+                $validAnswer = implode(", ", $allowedValues);
+                error_log("$userValue is not a valid answer. Please answer [$validAnswer]");
+                continue;
+            }
+        } else {
+            // all answers valid
+            return $userValue;
+        }
+    }
+}
+
+function convertYNToBoolean($yn) {
+    if (strtolower($yn) == "y") {
+        return true;
+    } elseif (strtolower($yn) == "n") {
+        return false;
+    } else {
+        throw new Exception("convertYNToBoolean Error: value passed is not y/n");
+    }
+}
+
+function getDefaults($defaultsfile) {
     $defaults = array('version' => '', 'flavor' => '',);
     if (file_exists($defaultsfile)) {
         $defaults = parse_ini_file($defaultsfile);
     }
     $defaultversion = $defaults['version'];
     $defaultflavor = $defaults['flavor'];
+    return array($defaultversion, $defaultflavor);
+}
 
-    $version = readline("Version: [$defaultversion] ");
-    $flavor = readline("Flavor (pro, ent, ult): [$defaultflavor] ");
-    $sidecar = readline("Fetch new sidecar y/[n]? ");
-    $demoData = readline("Build new Demo data y/[n]? ");
+function getAllUserInput($defaultversion=NULL, $defaultflavor=NULL) {
+    $FLAVORARRAY = array('pro', 'ent', 'ult');
+    $YNARRAY = array('y', 'n');
 
-    if (!$version) {
-        $version = $defaultversion;
-    }
-    if (!$flavor) {
-        $flavor = $defaultflavor;
-    }
-
-    if ($sidecar == "Y" || $sidecar == "y") {
-        $sidecar = true;
-    } else {
-        $sidecar = false;
-    }
-
-    if ($demoData == "Y" || $demoData == 'y') {
-        $demoData = true;
-    } else {
-        $demoData = false;
-    }
+    $version = promptUser("Version: [$defaultversion] ", NULL, $defaultversion);
+    $flavor = promptUser("Flavor (pro, ent, ult): [$defaultflavor] ", $FLAVORARRAY, $defaultflavor);
+    $sidecar = convertYNToBoolean(promptUser("Fetch new sidecar y/[n]? ", $YNARRAY, 'n'));
+    $demoData = convertYNToBoolean(promptUser("Build new Demo data y/[n]? ", $YNARRAY, 'n'));
 
     $newDump = false;
     $loadDump = false;
     if ($demoData) {
-        $newDumpStr = readline("Store new mysqldump? [y]/n ");
-        if ($newDumpStr == "N" || $newDumpStr == "n") {
-            $newDump = false;
-        } else {
-            $newDump = true;
-        }
+        $newDump = convertYNToBoolean(promptUser("Store new mysqldump [y]/n? ", $YNARRAY, 'y'));
     } else {
-        $loadDumpStr = readline("Load existing mysqldump? [y]/n ");
-        if ($loadDumpStr == "N" || $loadDumpStr == "n") {
-            $loadDump = false;
-        } else {
-            $loadDump = true;
-        }
+        $loadDump = convertYNToBoolean(promptUser("Load existing mysqldump [y]/n? ", $YNARRAY, 'y'));
     }
+    return array($version, $flavor, $sidecar, $demoData, $newDump, $loadDump);
+}
 
-    error_log("Building version $version, flavor $flavor");
-    $safeVersion = str_replace(".", "_", $version);
-
+function setDefaults($defaultsfile, $version, $flavor) {
     $defaultsrewrite = fopen($defaultsfile, 'w');
     fwrite($defaultsrewrite, '[sugar]'. PHP_EOL);
     fwrite($defaultsrewrite, "version=$version" . PHP_EOL);
     fwrite($defaultsrewrite, "flavor=$flavor" . PHP_EOL);
+    fclose($defaultsrewrite);
+}
 
-    //Build the config from template
+function updateConfigSi($flavor, $safeVersion, $demoData) {
+    global $HOME, $HOMEROOT;
     $configtemplate = "$HOME/config_si.php";
     $configdestination = "$HOMEROOT/Mango/sugarcrm/config_si.php";
-
+    error_log("updating $configdestination");
     $readhandle = fopen($configtemplate, 'r');
     $writehandle = fopen($configdestination, 'w');
-
-    error_log("updating $configdestination");
     if ($readhandle) {
         while ($line=fgets($readhandle)) {
             if (!$line) {
@@ -88,37 +160,27 @@ function theMain() {
     } else {
         fclose($readhandle);
         fclose($writehandle);
-        die("config template missing from $HOME/config_si.php");
+        die("config template missing from $configTemplate");
     }
+}
 
-    //Run the build
-    chdir("$HOMEROOT/Mango/build/rome");
-    $buildscript = "/usr/bin/php $HOMEROOT/Mango/build/rome/build.php --ver=$version --flav=$flavor --dir=sugarcrm --build_dir=$HOMEROOT/Sites/$safeVersion --latin=1 --clean --cleanCache";
-    run("$buildscript");
-    chdir("$HOMEROOT/Mango");
+function runBuild($sidecar, $version, $flavor, $safeVersion) {
+    global $HOME, $HOMEROOT;
     if ($sidecar) {
-        run("git submodule update");
+        run("git submodule update", "$HOMEROOT/Mango");
     }
+    $buildscript = "/usr/bin/php $HOMEROOT/Mango/build/rome/build.php --ver=$version --flav=$flavor --dir=sugarcrm --build_dir=$HOMEROOT/Sites/$safeVersion --latin=1 --clean --cleanCache";
+    run("$buildscript", "$HOMEROOT/Mango/build/rome");
     run("curl -s 'http://localhost/$safeVersion/$flavor/sugarcrm/install.php?goto=SilentInstall&cli=true'");
+}
+
+function runMysql($newDump, $loadDump, $database, $dumpfile) {
     if ($newDump) {
-        $database = "sugar_$safeVersion" . "_$flavor";
-        $dumpfile = "$HOME/$database.sql";
         run("mysqldump -uroot -pasdf $database > $dumpfile");
     } elseif ($loadDump) {
-        $database = "sugar_$safeVersion" . "_$flavor";
-        $dumpfile = "$HOME/$database.sql";
-        if (file_exists($dumpfile)) {
-            run("mysql -uroot -pasdf $database < $dumpfile");
-        } else {
-            error_log("file $dumpfile does not exist, cannot load data");
-            exit(1);
-        }
+        run("mysql -uroot -pasdf $database < $dumpfile");
     }
-    run("open http://localhost/$safeVersion/$flavor/sugarcrm");
 }
-function run($cmd) {
-    error_log("!running: `$cmd`");
-    shell_exec($cmd);
-}
+
 theMain();
 ?>
