@@ -1,0 +1,124 @@
+#!/usr/bin/php
+<?php
+function theMain() {
+    //Get the version and flavor for install
+
+    //$HOME = $_SERVER['HOME'];
+    $HOMEROOT = getenv("HOME");
+    $HOME = getcwd();
+
+    $defaultsfile = "$HOME/sugarbuildconfig.ini";
+    $defaults = array('version' => '', 'flavor' => '',);
+    if (file_exists($defaultsfile)) {
+        $defaults = parse_ini_file($defaultsfile);
+    }
+    $defaultversion = $defaults['version'];
+    $defaultflavor = $defaults['flavor'];
+
+    $version = readline("Version: [$defaultversion] ");
+    $flavor = readline("Flavor (pro, ent, ult): [$defaultflavor] ");
+    $sidecar = readline("Fetch new sidecar y/[n]? ");
+    $demoData = readline("Build new Demo data y/[n]? ");
+
+    if (!$version) {
+        $version = $defaultversion;
+    }
+    if (!$flavor) {
+        $flavor = $defaultflavor;
+    }
+
+    if ($sidecar == "Y" || $sidecar == "y") {
+        $sidecar = true;
+    } else {
+        $sidecar = false;
+    }
+
+    if ($demoData == "Y" || $demoData == 'y') {
+        $demoData = true;
+    } else {
+        $demoData = false;
+    }
+
+    $newDump = false;
+    $loadDump = false;
+    if ($demoData) {
+        $newDumpStr = readline("Store new mysqldump? [y]/n ");
+        if ($newDumpStr == "N" || $newDumpStr == "n") {
+            $newDump = false;
+        } else {
+            $newDump = true;
+        }
+    } else {
+        $loadDumpStr = readline("Load existing mysqldump? [y]/n ");
+        if ($loadDumpStr == "N" || $loadDumpStr == "n") {
+            $loadDump = false;
+        } else {
+            $loadDump = true;
+        }
+    }
+
+    error_log("Building version $version, flavor $flavor");
+    $safeVersion = str_replace(".", "_", $version);
+
+    $defaultsrewrite = fopen($defaultsfile, 'w');
+    fwrite($defaultsrewrite, '[sugar]'. PHP_EOL);
+    fwrite($defaultsrewrite, "version=$version" . PHP_EOL);
+    fwrite($defaultsrewrite, "flavor=$flavor" . PHP_EOL);
+
+    //Build the config from template
+    $configtemplate = "$HOME/config_si.php";
+    $configdestination = "$HOMEROOT/Mango/sugarcrm/config_si.php";
+
+    $readhandle = fopen($configtemplate, 'r');
+    $writehandle = fopen($configdestination, 'w');
+
+    error_log("updating $configdestination");
+    if ($readhandle) {
+        while ($line=fgets($readhandle)) {
+            if (!$line) {
+                break;
+            }
+            $line = str_replace('<FLAV>', $flavor, $line);
+            $line = str_replace('<VERS>', $safeVersion, $line);
+            $line = str_replace('<DEMO>', $demoData ? "true" : "false", $line);
+            fwrite($writehandle, $line);
+        }
+        fclose($readhandle);
+        fclose($writehandle);
+    } else {
+        fclose($readhandle);
+        fclose($writehandle);
+        die("config template missing from $HOME/config_si.php");
+    }
+
+    //Run the build
+    chdir("$HOMEROOT/Mango/build/rome");
+    $buildscript = "/usr/bin/php $HOMEROOT/Mango/build/rome/build.php --ver=$version --flav=$flavor --dir=sugarcrm --build_dir=$HOMEROOT/Sites/$safeVersion --latin=1 --clean --cleanCache";
+    run("$buildscript");
+    chdir("$HOMEROOT/Mango");
+    if ($sidecar) {
+        run("git submodule update");
+    }
+    run("curl -s 'http://localhost/$safeVersion/$flavor/sugarcrm/install.php?goto=SilentInstall&cli=true'");
+    if ($newDump) {
+        $database = "sugar_$safeVersion" . "_$flavor";
+        $dumpfile = "$HOME/$database.sql";
+        run("mysqldump -uroot -pasdf $database > $dumpfile");
+    } elseif ($loadDump) {
+        $database = "sugar_$safeVersion" . "_$flavor";
+        $dumpfile = "$HOME/$database.sql";
+        if (file_exists($dumpfile)) {
+            run("mysql -uroot -pasdf $database < $dumpfile");
+        } else {
+            error_log("file $dumpfile does not exist, cannot load data");
+            exit(1);
+        }
+    }
+    run("open http://localhost/$safeVersion/$flavor/sugarcrm");
+}
+function run($cmd) {
+    error_log("!running: `$cmd`");
+    shell_exec($cmd);
+}
+theMain();
+?>
