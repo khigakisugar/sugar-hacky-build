@@ -10,17 +10,17 @@ function theMain() {
     // get the default values from the ini file
     error_log("pulling defaults from ini file");
     $defaultsfile = "$HOME/sugarbuildconfig.ini";
-    list($defaultversion, $defaultflavor) = getDefaults($defaultsfile);
+    list($defaultversion, $defaultflavor, $dbpword) = getDefaults($defaultsfile);
 
     // get the user input
-    list($version, $flavor, $sidecar, $demoData, $newDump, $loadDump) = getOptions($defaultversion, $defaultflavor);
+    list($version, $flavor, $sidecar, $demoData, $newDump, $loadDump, $upDeps) = getOptions($defaultversion, $defaultflavor);
     $safeVersion = str_replace(".", "_", $version);
     $database = "sugar_$safeVersion" . "_$flavor";
     $dumpfile = "$HOME/$database.sql";
-        
+
     // update ini file
-    error_log("updating defaults: version=$version, flavor=$flavor");
-    setDefaults($defaultsfile, $version, $flavor);
+    error_log("updating defaults: version=$version, flavor=$flavor, password=$dbpword");
+    setDefaults($defaultsfile, $version, $flavor, $dbpword);
 
     // if loading from dump, check for mysqldump file
     if ($loadDump && !file_exists($dumpfile)) {
@@ -31,14 +31,33 @@ function theMain() {
     // Build the config from template
     updateConfigSi($flavor, $safeVersion, $demoData);
 
+    // update sidecar if needed
+    if ($sidecar) {
+        updateSubmodules();
+    }
+
+    // do a composer or npm update if needed
+    if ($upDeps) {
+        updateDependencies($flavor, $version);
+    }
+
     // Run the build
-    runBuild($sidecar, $version, $flavor, $safeVersion);
+    runBuild($version, $flavor, $safeVersion);
 
     // Create or load mysqldump file
-    runMysql($newDump, $loadDump, $database, $dumpfile);
+    runMysql($newDump, $loadDump, $database, $dumpfile, $dbpword);
 
     // Open a browser window
     run("open http://localhost/$safeVersion/$flavor/sugarcrm");
+}
+
+// run composer and npm updates in the install
+function updateDependencies($flavor, $version) {
+    global $HOME;
+    $loc = "$HOME/Mango/sugarcrm";
+    run("composer install", $loc);
+    run("npm install", $loc);
+    run("npm install", $loc . "/sidecar");
 }
 
 // version, flavor, sidecar, demoData, newDump, loadDump
@@ -62,11 +81,12 @@ function getOptions($defaultversion, $defaultflavor) {
             "\t\t\tTakes precedence over -q/--quick" . PHP_EOL .
             "-q, --quick\t\tRun in quick mode, after defaults have been set in manual mode" . PHP_EOL .
             "\t\t\tDefault Version, Default Flavor, Skip Sidecar, Skip Demo Data, Retrive data from MySQL dump" . PHP_EOL . PHP_EOL .
-            "When in doubt, run in the -i/--interactive mode" . PHP_EOL
+            "When in doubt, run in the -i/--interactive mode" . PHP_EOL . PHP_EOL .
+            "You MUST have a config_si.php file in your current working directory." . PHP_EOL
         );
         exit(0);
     }
-    
+
 }
 
 function run($cmd, $dir=NULL) {
@@ -121,7 +141,8 @@ function getDefaults($defaultsfile) {
     }
     $defaultversion = $defaults['version'];
     $defaultflavor = $defaults['flavor'];
-    return array($defaultversion, $defaultflavor);
+    $dbpword = $defaults['dbpword'];
+    return array($defaultversion, $defaultflavor, $dbpword);
 }
 
 function getAllUserInput($defaultversion=NULL, $defaultflavor=NULL) {
@@ -132,6 +153,7 @@ function getAllUserInput($defaultversion=NULL, $defaultflavor=NULL) {
     $flavor = promptUser("Flavor (pro, ent, ult): [$defaultflavor] ", $FLAVORARRAY, $defaultflavor);
     $sidecar = convertYNToBoolean(promptUser("Fetch new sidecar y/[n]? ", $YNARRAY, 'n'));
     $demoData = convertYNToBoolean(promptUser("Build new Demo data y/[n]? ", $YNARRAY, 'n'));
+    $upDeps = convertYNToBoolean(promptUser("Update dependencies y/[n]? ", $YNARRAY, 'n'));
 
     $newDump = false;
     $loadDump = false;
@@ -140,14 +162,15 @@ function getAllUserInput($defaultversion=NULL, $defaultflavor=NULL) {
     } else {
         $loadDump = convertYNToBoolean(promptUser("Load existing mysqldump [y]/n? ", $YNARRAY, 'y'));
     }
-    return array($version, $flavor, $sidecar, $demoData, $newDump, $loadDump);
+    return array($version, $flavor, $sidecar, $demoData, $newDump, $loadDump, $upDeps);
 }
 
-function setDefaults($defaultsfile, $version, $flavor) {
+function setDefaults($defaultsfile, $version, $flavor, $dbpword) {
     $defaultsrewrite = fopen($defaultsfile, 'w');
     fwrite($defaultsrewrite, '[sugar]'. PHP_EOL);
     fwrite($defaultsrewrite, "version=$version" . PHP_EOL);
     fwrite($defaultsrewrite, "flavor=$flavor" . PHP_EOL);
+    fwrite($defaultsrewrite, "dbpword=$dbpword" . PHP_EOL);
     fclose($defaultsrewrite);
 }
 
@@ -156,7 +179,11 @@ function updateConfigSi($flavor, $safeVersion, $demoData) {
     $configtemplate = "$HOME/config_si.php";
     $configdestination = "$HOMEROOT/Mango/sugarcrm/config_si.php";
     error_log("updating $configdestination");
-    $readhandle = fopen($configtemplate, 'r');
+    if (file_exists($configtemplate)) {
+        $readhandle = fopen($configtemplate, 'r');
+    } else {
+        $readhandle = false;
+    }
     $writehandle = fopen($configdestination, 'w');
     if ($readhandle) {
         while ($line=fgets($readhandle)) {
@@ -171,27 +198,28 @@ function updateConfigSi($flavor, $safeVersion, $demoData) {
         fclose($readhandle);
         fclose($writehandle);
     } else {
-        fclose($readhandle);
         fclose($writehandle);
         die("config template missing from $configTemplate");
     }
 }
 
-function runBuild($sidecar, $version, $flavor, $safeVersion) {
+function updateSubmodules() {
+    global $HOMEROOT;
+    run("git submodule update", "$HOMEROOT/Mango");
+}
+
+function runBuild($version, $flavor, $safeVersion) {
     global $HOME, $HOMEROOT;
-    if ($sidecar) {
-        run("git submodule update", "$HOMEROOT/Mango");
-    }
     $buildscript = "/usr/bin/php $HOMEROOT/Mango/build/rome/build.php --ver=$version --flav=$flavor --dir=sugarcrm --build_dir=$HOMEROOT/Sites/$safeVersion --latin=1 --clean --cleanCache";
     run("$buildscript", "$HOMEROOT/Mango/build/rome");
     run("curl -s 'http://localhost/$safeVersion/$flavor/sugarcrm/install.php?goto=SilentInstall&cli=true'");
 }
 
-function runMysql($newDump, $loadDump, $database, $dumpfile) {
+function runMysql($newDump, $loadDump, $database, $dumpfile, $dbpword) {
     if ($newDump) {
-        run("mysqldump -uroot -pasdf $database > $dumpfile");
+        run("mysqldump -uroot -p$dbpword $database > $dumpfile");
     } elseif ($loadDump) {
-        run("mysql -uroot -pasdf $database < $dumpfile");
+        run("mysql -uroot -p$dbpword $database < $dumpfile");
     }
 }
 
